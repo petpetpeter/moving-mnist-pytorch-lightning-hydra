@@ -3,11 +3,15 @@ from typing import Any, Dict, Optional, Tuple
 import torch
 from pytorch_lightning import LightningDataModule
 from torch.utils.data import ConcatDataset, DataLoader, Dataset, random_split
+from components.moving_mnist_dataset import MovingMNistDataset
 from torchvision.datasets import MNIST
 from torchvision.transforms import transforms
 
+
+
 import numpy as np
 import cv2
+import matplotlib.pyplot as plt
 
 class MonvingMnistDataModule(LightningDataModule):
     """Example of LightningDataModule for MNIST dataset.
@@ -41,7 +45,7 @@ class MonvingMnistDataModule(LightningDataModule):
         self,
         data_dir: str = "data/",
         train_val_test_split: Tuple[int, int, int] = (55_000, 5_000, 10_000),
-        batch_size: int = 64,
+        batch_size: int = 32,
         num_workers: int = 0,
         pin_memory: bool = False,
     ):
@@ -53,7 +57,7 @@ class MonvingMnistDataModule(LightningDataModule):
 
         # data transformations
         self.transforms = transforms.Compose(
-            [transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))]
+            [transforms.ToTensor()]
         )
 
         self.data_train: Optional[Dataset] = None
@@ -82,20 +86,28 @@ class MonvingMnistDataModule(LightningDataModule):
         """
         data_shape = (10,1,64,64) # (seq_len, Channel, height, width)
         # load and split datasets only if not loaded already
-        data_numpy = np.load('/home/peter/py_ws/ltsmae/lightning-hydra-template/data/Moving_MNIST/mnist_test_seq.npy')
+        data_numpy = np.load('/root/dia_ws/moving-mnist-pytorch-lightning-hydra/data/mnist_test_seq.npy')
+        data_numpy = np.swapaxes(data_numpy, 0, 1)
+        #print(f"shape of data_numpy: {data_numpy.shape}")
+        #cp_data_numpy = data_numpy.copy()
+        #cp_data_numpy = np.swapaxes(cp_data_numpy, 0, 1)
+        #cp_data_1 = cp_data_numpy[0]
+        # for img in cp_data_1:
+        #     cv2.imshow('real', img)
+        #     cv2.waitKey(0)
         # (seq_len,num_seq,height,width)
         # swap to (num_seq,seq_len,height,width)
-        data_numpy = np.swapaxes(data_numpy,0,1)
+        #data_numpy = np.swapaxes(data_numpy,0,1)
+        #data_numpy = data_numpy/255
+        
         #random split to train, val, test 0.7, 0.15, 0.15
         len_train = int(data_numpy.shape[0]*0.7)
         len_val = int(data_numpy.shape[0]*0.15)
         len_test = data_numpy.shape[0] - len_train - len_val
-        self.data_train = data_numpy[:len_train]
-        self.data_val = data_numpy[len_train:len_train+len_val]
-        self.data_test = data_numpy[len_train+len_val:]
-
+        self.data_train = MovingMNistDataset(data_numpy[:len_train])
+        self.data_val = MovingMNistDataset(data_numpy[len_train:len_train+len_val])
+        self.data_test = MovingMNistDataset(data_numpy[len_train+len_val:])
         
-            
 
     def train_dataloader(self):
         return DataLoader(
@@ -103,7 +115,7 @@ class MonvingMnistDataModule(LightningDataModule):
             batch_size=self.hparams.batch_size,
             num_workers=self.hparams.num_workers,
             pin_memory=self.hparams.pin_memory,
-            shuffle=True,
+            shuffle=False,
         )
 
     def val_dataloader(self):
@@ -141,7 +153,20 @@ if __name__ == "__main__":
     mmd = MonvingMnistDataModule()
     mmd.prepare_data()
     mmd.setup()
-    first_batch = next(iter(mmd.train_dataloader()))
-    print(first_batch.shape)
+    x_frames,y_frames = next(iter(mmd.train_dataloader()))
+    print(f"shape of x_frames: {x_frames.shape}")
+    print(f"shape of y_frames: {y_frames.shape}")
+    first_batch_x = x_frames[1]
+    first_batch_y = y_frames[1]
+
+    for img in first_batch_x:
+        cv2.imshow('image',img.numpy())
+        cv2.waitKey(0)
+    for img in first_batch_y:
+        cv2.imshow('image2',img.numpy())
+        cv2.waitKey(0)
+
+
+
 
 

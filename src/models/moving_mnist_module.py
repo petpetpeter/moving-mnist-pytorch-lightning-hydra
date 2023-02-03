@@ -6,129 +6,145 @@ from torchmetrics import MaxMetric, MeanMetric
 from torchmetrics.classification.accuracy import Accuracy
 
 
+class MovingMNISTLitModule(LightningModule):
+    """Example of LightningModule for MNIST classification.
 
-class MovingMNISTLightning(pl.LightningModule):
+    A LightningModule organizes your PyTorch code into 6 sections:
+        - Computations (init)
+        - Train loop (training_step)
+        - Validation loop (validation_step)
+        - Test loop (test_step)
+        - Prediction Loop (predict_step)
+        - Optimizers and LR Schedulers (configure_optimizers)
 
-    def __init__(self, hparams=None, model=None):
-        super(MovingMNISTLightning, self).__init__()
+    Docs:
+        https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html
+    """
 
-        # default config
-        self.path = os.getcwd() + '/data'
-        self.model = model
+    def __init__(
+        self,
+        net: torch.nn.Module,
+        optimizer: torch.optim.Optimizer,
+        scheduler: torch.optim.lr_scheduler,
+    ):
+        super().__init__()
 
-        # logging config
-        self.log_images = True
+        # this line allows to access init params with 'self.hparams' attribute
+        # also ensures init params will be stored in ckpt
+        self.save_hyperparameters(logger=False)
 
-        # Training config
-        self.criterion = torch.nn.MSELoss()
-        self.batch_size = 12
-        self.n_steps_past = 10
-        self.n_steps_ahead = 10  # 4
+        self.net = net
 
-    def create_video(self, x, y_hat, y):
-        # predictions with input for illustration purposes
-        preds = torch.cat([x.cpu(), y_hat.unsqueeze(2).cpu()], dim=1)[0]
+        # loss function
+        self.criterion = torch.nn.CrossEntropyLoss()
 
-        # entire input and ground truth
-        y_plot = torch.cat([x.cpu(), y.unsqueeze(2).cpu()], dim=1)[0]
+        # metric objects for calculating and averaging accuracy across batches
+        self.train_acc = Accuracy(task="multiclass", num_classes=10)
+        self.val_acc = Accuracy(task="multiclass", num_classes=10)
+        self.test_acc = Accuracy(task="multiclass", num_classes=10)
 
-        # error (l2 norm) plot between pred and ground truth
-        difference = (torch.pow(y_hat[0] - y[0], 2)).detach().cpu()
-        zeros = torch.zeros(difference.shape)
-        difference_plot = torch.cat([zeros.cpu().unsqueeze(0), difference.unsqueeze(0).cpu()], dim=1)[
-            0].unsqueeze(1)
+        # for averaging loss across batches
+        self.train_loss = MeanMetric()
+        self.val_loss = MeanMetric()
+        self.test_loss = MeanMetric()
 
-        # concat all images
-        final_image = torch.cat([preds, y_plot, difference_plot], dim=0)
+        # for tracking best so far validation accuracy
+        self.val_acc_best = MaxMetric()
 
-        # make them into a single grid image file
-        grid = torchvision.utils.make_grid(final_image, nrow=self.n_steps_past + self.n_steps_ahead)
+    def forward(self, x: torch.Tensor):
+        return self.net(x)
 
-        return grid
+    def on_train_start(self):
+        # by default lightning executes validation step sanity checks before training starts,
+        # so we need to make sure val_acc_best doesn't store accuracy from these checks
+        self.val_acc_best.reset()
 
-    def forward(self, x):
-        x = x.to(device='cuda')
-
-        output = self.model(x, future_seq=self.n_steps_ahead)
-
-        return output
-
-    def training_step(self, batch, batch_idx):
-        x, y = batch[:, 0:self.n_steps_past, :, :, :], batch[:, self.n_steps_past:, :, :, :]
-        x = x.permute(0, 1, 4, 2, 3)
-        y = y.squeeze()
-
-        y_hat = self.forward(x).squeeze()  # is squeeze neccessary?
-
-        loss = self.criterion(y_hat, y)
-
-        # save learning_rate
-        lr_saved = self.trainer.optimizers[0].param_groups[-1]['lr']
-        lr_saved = torch.scalar_tensor(lr_saved).cuda()
-
-        # save predicted images every 250 global_step
-        if self.log_images:
-            if self.global_step % 250 == 0:
-                final_image = self.create_video(x, y_hat, y)
-
-                self.logger.experiment.add_image(
-                    'epoch_' + str(self.current_epoch) + '_step' + str(self.global_step) + '_generated_images',
-                    final_image, 0)
-                plt.close()
-
-        tensorboard_logs = {'train_mse_loss': loss,
-                            'learning_rate': lr_saved}
-
-        return {'loss': loss, 'log': tensorboard_logs}
-
-
-    def test_step(self, batch, batch_idx):
-        # OPTIONAL
+    def model_step(self, batch: Any):
         x, y = batch
-        y_hat = self.forward(x)
-        return {'test_loss': self.criterion(y_hat, y)}
+        logits = self.forward(x)
+        loss = self.criterion(logits, y)
+        preds = torch.argmax(logits, dim=1)
+        return loss, preds, y
 
+    def training_step(self, batch: Any, batch_idx: int):
+        loss, preds, targets = self.model_step(batch)
 
-    def test_end(self, outputs):
-        # OPTIONAL
-        avg_loss = torch.stack([x['test_loss'] for x in outputs]).mean()
-        tensorboard_logs = {'test_loss': avg_loss}
-        return {'avg_test_loss': avg_loss, 'log': tensorboard_logs}
+        # update and log metrics
+        self.train_loss(loss)
+        self.train_acc(preds, targets)
+        self.log("train/loss", self.train_loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("train/acc", self.train_acc, on_step=False, on_epoch=True, prog_bar=True)
 
+        # we can return here dict with any tensors
+        # and then read it in some callback or in `training_epoch_end()` below
+        # remember to always return loss from `training_step()` or backpropagation will fail!
+        return {"loss": loss, "preds": preds, "targets": targets}
+
+    def training_epoch_end(self, outputs: List[Any]):
+        # `outputs` is a list of dicts returned from `training_step()`
+
+        # Warning: when overriding `training_epoch_end()`, lightning accumulates outputs from all batches of the epoch
+        # this may not be an issue when training on mnist
+        # but on larger datasets/models it's easy to run into out-of-memory errors
+
+        # consider detaching tensors before returning them from `training_step()`
+        # or using `on_train_epoch_end()` instead which doesn't accumulate outputs
+
+        pass
+
+    def validation_step(self, batch: Any, batch_idx: int):
+        loss, preds, targets = self.model_step(batch)
+
+        # update and log metrics
+        self.val_loss(loss)
+        self.val_acc(preds, targets)
+        self.log("val/loss", self.val_loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("val/acc", self.val_acc, on_step=False, on_epoch=True, prog_bar=True)
+
+        return {"loss": loss, "preds": preds, "targets": targets}
+
+    def validation_epoch_end(self, outputs: List[Any]):
+        acc = self.val_acc.compute()  # get current val acc
+        self.val_acc_best(acc)  # update best so far val acc
+        # log `val_acc_best` as a value through `.compute()` method, instead of as a metric object
+        # otherwise metric would be reset by lightning after each epoch
+        self.log("val/acc_best", self.val_acc_best.compute(), prog_bar=True)
+
+    def test_step(self, batch: Any, batch_idx: int):
+        loss, preds, targets = self.model_step(batch)
+
+        # update and log metrics
+        self.test_loss(loss)
+        self.test_acc(preds, targets)
+        self.log("test/loss", self.test_loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("test/acc", self.test_acc, on_step=False, on_epoch=True, prog_bar=True)
+
+        return {"loss": loss, "preds": preds, "targets": targets}
+
+    def test_epoch_end(self, outputs: List[Any]):
+        pass
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=opt.lr, betas=(opt.beta_1, opt.beta_2))
+        """Choose what optimizers and learning-rate schedulers to use in your optimization.
+        Normally you'd need one. But in the case of GANs or similar you might have multiple.
 
-    @pl.data_loader
-    def train_dataloader(self):
-        train_data = MovingMNIST(
-            train=True,
-            data_root=self.path,
-            seq_len=self.n_steps_past + self.n_steps_ahead,
-            image_size=64,
-            deterministic=True,
-            num_digits=2)
+        Examples:
+            https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#configure-optimizers
+        """
+        optimizer = self.hparams.optimizer(params=self.parameters())
+        if self.hparams.scheduler is not None:
+            scheduler = self.hparams.scheduler(optimizer=optimizer)
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": {
+                    "scheduler": scheduler,
+                    "monitor": "val/loss",
+                    "interval": "epoch",
+                    "frequency": 1,
+                },
+            }
+        return {"optimizer": optimizer}
 
-        train_loader = torch.utils.data.DataLoader(
-            dataset=train_data,
-            batch_size=self.batch_size,
-            shuffle=True)
 
-        return train_loader
-
-    @pl.data_loader
-    def test_dataloader(self):
-        test_data = MovingMNIST(
-            train=False,
-            data_root=self.path,
-            seq_len=self.n_steps_past + self.n_steps_ahead,
-            image_size=64,
-            deterministic=True,
-            num_digits=2)
-
-        test_loader = torch.utils.data.DataLoader(
-            dataset=test_data,
-            batch_size=self.batch_size,
-            shuffle=True)
-
-        return test_loader
+if __name__ == "__main__":
+    _ = MNISTLitModule(None, None, None)

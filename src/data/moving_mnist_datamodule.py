@@ -3,17 +3,20 @@ from typing import Any, Dict, Optional, Tuple
 import torch
 from pytorch_lightning import LightningDataModule
 from torch.utils.data import ConcatDataset, DataLoader, Dataset, random_split
-from components.moving_mnist_dataset import MovingMNistDataset
+
+
 from torchvision.datasets import MNIST
 from torchvision.transforms import transforms
-
-
 
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 
-class MonvingMnistDataModule(LightningDataModule):
+import pyrootutils
+pyrootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
+from src.data.components.moving_mnist_dataset import MovingMNistDataset
+
+class MovingMnistDataModule(LightningDataModule):
     """Example of LightningDataModule for MNIST dataset.
 
     A DataModule implements 5 key methods:
@@ -88,7 +91,9 @@ class MonvingMnistDataModule(LightningDataModule):
         # load and split datasets only if not loaded already
         data_numpy = np.load('/root/dia_ws/moving-mnist-pytorch-lightning-hydra/data/mnist_test_seq.npy')
         data_numpy = np.swapaxes(data_numpy, 0, 1)
-        #print(f"shape of data_numpy: {data_numpy.shape}")
+        #add gray channel
+        data_numpy = np.expand_dims(data_numpy, axis=2)
+        print(f"shape of data_numpy: {data_numpy.shape}")
         #cp_data_numpy = data_numpy.copy()
         #cp_data_numpy = np.swapaxes(cp_data_numpy, 0, 1)
         #cp_data_1 = cp_data_numpy[0]
@@ -150,7 +155,7 @@ class MonvingMnistDataModule(LightningDataModule):
 
 
 if __name__ == "__main__":
-    mmd = MonvingMnistDataModule()
+    mmd = MovingMnistDataModule()
     mmd.prepare_data()
     mmd.setup()
     x_frames,y_frames = next(iter(mmd.train_dataloader()))
@@ -160,10 +165,12 @@ if __name__ == "__main__":
     first_batch_y = y_frames[1]
 
     for img in first_batch_x:
-        cv2.imshow('image',img.numpy())
+        img_channel_last = np.swapaxes(img,0,2)
+        cv2.imshow('image',img_channel_last.numpy())
         cv2.waitKey(0)
     for img in first_batch_y:
-        cv2.imshow('image2',img.numpy())
+        img_channel_last = np.swapaxes(img,0,2)
+        cv2.imshow('image2',img_channel_last.numpy())
         cv2.waitKey(0)
 
 

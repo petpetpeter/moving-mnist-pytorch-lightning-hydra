@@ -1,13 +1,14 @@
-
-
 import torch
 import torch.nn as nn
 
+import pyrootutils
+pyrootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 from src.models.components.ConvLSTMCell import ConvLSTMCell
 
-class EncoderDecoderConvLSTM(nn.Module):
+
+class AEConvLSTM(nn.Module):
     def __init__(self, nf, in_chan):
-        super(EncoderDecoderConvLSTM, self).__init__()
+        super(AEConvLSTM, self).__init__()
 
         """ ARCHITECTURE 
         # Encoder (ConvLSTM)
@@ -39,6 +40,7 @@ class EncoderDecoderConvLSTM(nn.Module):
                                      out_channels=1,
                                      kernel_size=(1, 3, 3),
                                      padding=(0, 1, 1))
+        self.double()
 
 
     def autoencoder(self, x, seq_len, future_step, h_t, c_t, h_t2, c_t2, h_t3, c_t3, h_t4, c_t4):
@@ -65,13 +67,19 @@ class EncoderDecoderConvLSTM(nn.Module):
             outputs += [h_t4]  # predictions
 
         outputs = torch.stack(outputs, 1)
+        #print(f"outputs decoder 2: {outputs.shape}")
+
         outputs = outputs.permute(0, 2, 1, 3, 4)
+        #print(f"outputs decoder 2.5: {outputs.shape}")
         outputs = self.decoder_CNN(outputs)
         outputs = torch.nn.Sigmoid()(outputs)
+        #swap back to (batch, seq, channel, height, width)
+        outputs = outputs.permute(0, 2, 1, 3, 4)
+        #print(f"outputs 3dcnn: {outputs.shape}")
 
         return outputs
 
-    def forward(self, x, future_seq=0, hidden_state=None):
+    def forward(self, x, future_seq=10, hidden_state=None):
 
         """
         Parameters
@@ -92,4 +100,4 @@ class EncoderDecoderConvLSTM(nn.Module):
         # autoencoder forward
         outputs = self.autoencoder(x, seq_len, future_seq, h_t, c_t, h_t2, c_t2, h_t3, c_t3, h_t4, c_t4)
 
-        return 
+        return outputs

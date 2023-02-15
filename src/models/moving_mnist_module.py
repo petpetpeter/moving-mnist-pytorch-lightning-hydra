@@ -5,6 +5,11 @@ from pytorch_lightning import LightningModule
 from torchmetrics import MaxMetric, MeanMetric
 from torchmetrics.classification.accuracy import Accuracy
 
+import pyrootutils
+pyrootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
+from src.models.components.AEConvLSTM import AEConvLSTM
+from src.data.moving_mnist_datamodule import MovingMnistDataModule
+
 
 class MovingMNISTLitModule(LightningModule):
     """Example of LightningModule for MNIST classification.
@@ -35,18 +40,13 @@ class MovingMNISTLitModule(LightningModule):
 
         self.net = net
 
-        # loss function
-        self.criterion = torch.nn.CrossEntropyLoss()
-
         # metric objects for calculating and averaging accuracy across batches
         self.train_acc = Accuracy(task="multiclass", num_classes=10)
         self.val_acc = Accuracy(task="multiclass", num_classes=10)
         self.test_acc = Accuracy(task="multiclass", num_classes=10)
 
         # for averaging loss across batches
-        self.train_loss = MeanMetric()
-        self.val_loss = MeanMetric()
-        self.test_loss = MeanMetric()
+        self.criterion = torch.nn.MSELoss()
 
         # for tracking best so far validation accuracy
         self.val_acc_best = MaxMetric()
@@ -61,24 +61,19 @@ class MovingMNISTLitModule(LightningModule):
 
     def model_step(self, batch: Any):
         x, y = batch
-        logits = self.forward(x)
-        loss = self.criterion(logits, y)
-        preds = torch.argmax(logits, dim=1)
-        return loss, preds, y
+        y_pred = self.forward(x)
+        loss = self.criterion(y_pred, y)
+        loss = loss.to(torch.float32)
+        print(f"x_dtype: {x.dtype}, y_dtype: {y.dtype}, y_pred_dtype: {y_pred.dtype}, loss_dtype: {loss.dtype}")
+        
+        return loss, y_pred, y
 
     def training_step(self, batch: Any, batch_idx: int):
         loss, preds, targets = self.model_step(batch)
-
-        # update and log metrics
-        self.train_loss(loss)
-        self.train_acc(preds, targets)
-        self.log("train/loss", self.train_loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.log("train/acc", self.train_acc, on_step=False, on_epoch=True, prog_bar=True)
-
         # we can return here dict with any tensors
         # and then read it in some callback or in `training_epoch_end()` below
         # remember to always return loss from `training_step()` or backpropagation will fail!
-        return {"loss": loss, "preds": preds, "targets": targets}
+        return {"loss": loss}
 
     def training_epoch_end(self, outputs: List[Any]):
         # `outputs` is a list of dicts returned from `training_step()`
@@ -94,32 +89,18 @@ class MovingMNISTLitModule(LightningModule):
 
     def validation_step(self, batch: Any, batch_idx: int):
         loss, preds, targets = self.model_step(batch)
-
-        # update and log metrics
-        self.val_loss(loss)
-        self.val_acc(preds, targets)
-        self.log("val/loss", self.val_loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.log("val/acc", self.val_acc, on_step=False, on_epoch=True, prog_bar=True)
-
-        return {"loss": loss, "preds": preds, "targets": targets}
+        # we can return here dict with any tensors
+        # and then read it in some callback or in `training_epoch_end()` below
+        # remember to always return loss from `training_step()` or backpropagation will fail!
+        return {"loss": loss}
 
     def validation_epoch_end(self, outputs: List[Any]):
-        acc = self.val_acc.compute()  # get current val acc
-        self.val_acc_best(acc)  # update best so far val acc
-        # log `val_acc_best` as a value through `.compute()` method, instead of as a metric object
-        # otherwise metric would be reset by lightning after each epoch
-        self.log("val/acc_best", self.val_acc_best.compute(), prog_bar=True)
+        pass
 
     def test_step(self, batch: Any, batch_idx: int):
         loss, preds, targets = self.model_step(batch)
 
-        # update and log metrics
-        self.test_loss(loss)
-        self.test_acc(preds, targets)
-        self.log("test/loss", self.test_loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.log("test/acc", self.test_acc, on_step=False, on_epoch=True, prog_bar=True)
-
-        return {"loss": loss, "preds": preds, "targets": targets}
+        return {"loss": loss}
 
     def test_epoch_end(self, outputs: List[Any]):
         pass
@@ -147,4 +128,21 @@ class MovingMNISTLitModule(LightningModule):
 
 
 if __name__ == "__main__":
-    _ = MNISTLitModule(None, None, None)
+
+    mmd = MovingMnistDataModule(batch_size=2)
+    mmd.prepare_data()
+    mmd.setup()
+
+    x_frames,y_frames = next(iter(mmd.train_dataloader()))
+    print(f"input: {x_frames.shape}")
+    print(f"dtype: {x_frames.dtype}")
+
+    conv_lstm_model = AEConvLSTM(64, in_chan=1)
+    print(x_frames.shape)
+    y_pred = conv_lstm_model(x_frames,future_seq=10)
+    print(y_pred.shape)
+
+    critirion = torch.nn.MSELoss()
+    loss = critirion(y_pred, y_frames)
+    print(loss)
+
